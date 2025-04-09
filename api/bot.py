@@ -2,24 +2,17 @@ import os
 import time
 import logging
 import requests
-from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 from web3 import Web3
 import json
 
-# Load env
-load_dotenv()
-
 # Logging
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# Token
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    logging.error("❌ BOT_TOKEN missing in .env")
-    exit()
+# Token from Render environment
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 # Web3
 w3 = Web3()
