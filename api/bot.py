@@ -19,7 +19,7 @@ user_pending_amount = {}
 user_wallets = {}
 TON_RECEIVE_ADDRESS = "UQCMbQomO3XD1FSt7pyfjqj2jBRzyg23myKDtCky_CedKpEH"
 TON_CONNECT_BASE = "https://gigi-ton-connect.vercel.app/sign"
-SUPPORTED_FIATS = ["NGN", "GHS", "KES"]
+SUPPORTED_FIATS = ["NGN", "GHS", "KES", "USD", "ZAR", "GBP"]
 
 # --- API Helpers ---
 def get_usdt_to_fiat_rate(fiat):
@@ -41,11 +41,21 @@ def get_ton_usdt_price():
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.chat_id
-    keyboard = [[InlineKeyboardButton(fiat, callback_data=f"fiat_{fiat}")] for fiat in SUPPORTED_FIATS]
+    keyboard = [
+        [InlineKeyboardButton("\U0001F517 Connect Wallet", url="https://gigi-ton-connect.vercel.app/?returnUrl=https%3A%2F%2Ft.me%2FGigiP2Bot")],
+        [InlineKeyboardButton("\U0001F4B5 Buy Crypto", callback_data="buy_crypto"), InlineKeyboardButton("\U0001F4B8 Sell Crypto", callback_data="sell_crypto")],
+        [InlineKeyboardButton("\U0001F4B0 Select Fiat", callback_data="select_fiat")]
+    ]
     await update.message.reply_text(
-        "\U0001F4B5 Welcome to *GigiP2Bot*!\n\nPlease choose your local currency:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.MARKDOWN
+        "\U0001F44B Welcome to *GigiP2Bot* — your Web3 assistant \U0001F916\U0001F4B8\n\n"
+        "Say things like:\n"
+        "• *Buy BTC fast*\n"
+        "• *Sell TON now*\n"
+        "• *Buy TON with fiat*\n"
+        "• *Connect my wallet*\n\n"
+        "\U0001F447 Start by picking an action:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -53,11 +63,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     uid = query.message.chat_id
 
+    if query.data == "select_fiat":
+        keyboard = [[InlineKeyboardButton(fiat, callback_data=f"fiat_{fiat}")] for fiat in SUPPORTED_FIATS]
+        await query.message.reply_text("\U0001F4B5 Please choose your local currency:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
     if query.data.startswith("fiat_"):
         fiat = query.data.replace("fiat_", "")
         user_data[uid] = {"fiat": fiat}
         user_pending_fiat[uid] = True
         await query.message.reply_text(f"\U0001F4B0 Great! Now enter the amount in {fiat} you want to convert to TON (e.g. 5000):")
+
+    if query.data == "buy_crypto":
+        await query.message.reply_text("\U0001F4B5 To buy TON, please select your fiat currency using /start and follow the steps.")
+
+    if query.data == "sell_crypto":
+        await query.message.reply_text("\U0001F4B8 Sell flow coming soon! Stay tuned.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.chat_id
@@ -92,17 +113,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("\u274C Invalid amount. Please enter a number like 5000 or 200.")
         return
 
-    await update.message.reply_text("\U0001F916 Try /start to begin again or type an amount to convert.")
+    await update.message.reply_text("\U0001F916 You can say 'buy TON', 'sell BTC', or use /start to begin again.")
 
 # Main
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logging.info("\U0001F680 GigiP2Bot with Fiat Conversion + TON Signing is LIVE!")
+    logging.info("\U0001F680 GigiP2Bot with Beauty + Fiat Conversion is LIVE!")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-
