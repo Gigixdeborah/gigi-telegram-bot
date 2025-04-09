@@ -4,3 +4,4 @@ aiohttp
 nest_asyncio
 Pillow
 qrcode
+web3
