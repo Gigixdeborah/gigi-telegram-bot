@@ -5,3 +5,4 @@ nest_asyncio
 Pillow
 qrcode
 web3
+python-dotenv
