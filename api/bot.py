@@ -1,25 +1,33 @@
 import os
 import json
+import time
 import logging
 import requests
+from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
+
+# Load .env for local dev
+load_dotenv()
 
 # Logging
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
 # Bot token
-BOT_TOKEN = os.environ["BOT_TOKEN"]
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Data
 user_data = {}
 user_pending_fiat = {}
 user_pending_amount = {}
 user_wallets = {}
+user_orders = {}
+user_signatures = {}
 TON_RECEIVE_ADDRESS = "UQCMbQomO3XD1FSt7pyfjqj2jBRzyg23myKDtCky_CedKpEH"
 TON_CONNECT_BASE = "https://gigi-ton-connect.vercel.app/sign"
 SUPPORTED_FIATS = ["NGN", "GHS", "KES", "USD", "ZAR", "GBP"]
+SUPPORTED_CRYPTOS = ["btc", "eth", "usdt", "bnb", "sol", "ton", "ada", "xrp", "dot", "doge"]
 
 # --- API Helpers ---
 def get_usdt_to_fiat_rate(fiat):
@@ -30,11 +38,15 @@ def get_usdt_to_fiat_rate(fiat):
     except:
         return None
 
-def get_ton_usdt_price():
+def get_crypto_price(symbol):
     try:
-        url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol=TONUSDT"
+        url = f"https://api.bybit.com/v5/market/tickers?category=spot"
         r = requests.get(url).json()
-        return float(r["result"]["list"][0]["lastPrice"])
+        tickers = r.get("result", {}).get("list", [])
+        for coin in tickers:
+            if coin["symbol"] == f"{symbol.upper()}USDT":
+                return float(coin["lastPrice"])
+        return None
     except:
         return None
 
@@ -90,7 +102,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amount_fiat = float(text)
             fiat = user_data[uid]["fiat"]
             usdt_to_fiat = get_usdt_to_fiat_rate(fiat)
-            ton_usdt = get_ton_usdt_price()
+            ton_usdt = get_crypto_price("ton")
 
             if not usdt_to_fiat or not ton_usdt:
                 await update.message.reply_text("\u274C Couldn't fetch live rates. Try again later.")
@@ -113,7 +125,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("\u274C Invalid amount. Please enter a number like 5000 or 200.")
         return
 
-    await update.message.reply_text("\U0001F916 You can say 'buy TON', 'sell BTC', or use /start to begin again.")
+    # Wallet address handling
+    if text.startswith("0x") or 32 <= len(text.strip()) <= 48:
+        wallet_type = "evm" if text.startswith("0x") else "ton"
+        icon = "🟣" if wallet_type == "evm" else "🔷"
+        user_wallets[uid] = {"wallet_address": text, "type": wallet_type}
+        await update.message.reply_text(f"{icon} *{wallet_type.upper()} wallet connected:* `{text}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if "sign" in text:
+        msg = f"Sign this message in your wallet: GigiWallet-{uid}-{int(time.time())}"
+        user_signatures[uid] = msg
+        await update.message.reply_text(f"🖊 `{msg}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # Smart coin response (e.g. "buy btc", "sell eth")
+    for coin in SUPPORTED_CRYPTOS:
+        if coin in text:
+            price = get_crypto_price(coin)
+            if price:
+                await update.message.reply_text(f"\U0001F4B0 *{coin.upper()}* is currently *${price:,.2f}*", parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(f"\u274C Couldn't get {coin.upper()} price")
+            user_orders.setdefault(uid, []).append(f"Checked {coin.upper()} rate")
+            return
+
+    await update.message.reply_text("\U0001F916 You can say 'buy BTC', paste wallet address, or use /start.", parse_mode=ParseMode.MARKDOWN)
 
 # Main
 
@@ -122,7 +159,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    logging.info("\U0001F680 GigiP2Bot with Beauty + Fiat Conversion is LIVE!")
+    logging.info("\U0001F680 GigiP2Bot with All Features is LIVE!")
     app.run_polling()
 
 if __name__ == "__main__":
