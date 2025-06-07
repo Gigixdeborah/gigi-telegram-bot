@@ -11,6 +11,8 @@ from telegram.ext import (
     ContextTypes,
     CallbackQueryHandler,
 )
+
+from telegram.ext import CommandHandler
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -44,6 +46,9 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 TWA_BASE_URL = os.getenv("TWA_BASE_URL", "https://gigi-wallet-signing.onrender.com")
 BYBIT_API_URL = "https://api.bybit.com"
 BYBIT_RECIPIENT_API_URL = os.getenv("BYBIT_RECIPIENT_API_URL", "https://api.bybit.com/custom/recipient")
+
+# === OLLAMA Integration ===
+OLLAMA_ENDPOINT = os.getenv("OLLAMA_ENDPOINT", "http://localhost:11434/api/generate")
 
 FALLBACK_ADDRESSES = {
     "TON": os.getenv("FALLBACK_TON_ADDRESS", "UQCMbQomO3XD1FSt7pyfjqj2jBRzyg23myKDtCky_CedKpEH"),
@@ -87,6 +92,18 @@ SUPPORTED_TOKENS = {
 SUPPORTED_TOKENS_LOWER = {k.lower(): k for k in SUPPORTED_TOKENS.keys()}
 
 conversation_context: Dict[int, Dict] = {}
+
+# === OLLAMA Integration ===
+def query_ollama(prompt: str) -> str:
+    try:
+        response = requests.post(
+            OLLAMA_ENDPOINT,
+            json={"model": "tinyllama", "prompt": prompt, "stream": False}
+        )
+        return response.json().get("response", "🤖 I didn’t get that. Try again?")
+    except Exception as e:
+        logger.error(f"Ollama error: {e}")
+        return "🤖 Hmm, my brain glitched!"
 
 # Utility Functions
 def escape_markdown(text: str) -> str:
@@ -537,6 +554,10 @@ async def handle_conversation(user_id: int, message: str) -> str:
         suggestions = [s for s in suggestions if s not in past_intents[-2:]]
     suggestions = suggestions[:3] if len(suggestions) >= 3 else suggestions
     keyboard = [[InlineKeyboardButton(s.capitalize(), callback_data=f"quick_{s}")] for s in suggestions]
+    if intent == "conversation":
+        ollama_reply = query_ollama(text)
+        update_context(user_id, {"state": None, "data": {}, "history": history + ["conversation"]})
+        return ollama_reply
     update_context(user_id, {"state": None, "data": data, "history": history + ["conversation"]})
     return f"I’m not sure what you mean! Maybe try {', '.join(suggestions[:-1])} or {suggestions[-1]}? Pick an action: {InlineKeyboardMarkup(keyboard)}"
 
@@ -679,6 +700,31 @@ async def quick_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="MarkdownV2"
         )
 
+async def transactions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    async with AsyncSessionFactory() as db:
+        result = await db.execute(
+            Transaction.__table__.select().where(Transaction.user_id == str(user_id)).order_by(Transaction.id.desc()).limit(5)
+        )
+        txs = result.fetchall()
+        if not txs:
+            await update.message.reply_text("\U0001fa90 No recent transactions found.")
+        else:
+            tx_list = "\n".join([f"{tx.token} | {tx.amount} | {tx.chain} | {tx.status.name} \nTxID: {tx.tx_hash[:10]}..." for tx in txs])
+            await update.message.reply_text(f"\U0001f4dc Recent Transactions:\n{tx_list}")
+
+async def resync_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    keyboard = [
+        [InlineKeyboardButton("\U0001f504 Reconnect TON", url=f"{TWA_BASE_URL}/sign.html?user_id={user_id}"),
+         InlineKeyboardButton("\U0001f504 Reconnect EVM", url=f"{TWA_BASE_URL}/evm.html?user_id={user_id}"),
+         InlineKeyboardButton("\U0001f504 Reconnect Solana", url=f"{TWA_BASE_URL}/solana.html?user_id={user_id}")]
+    ]
+    await update.message.reply_text("\U0001f50c Let's resync your wallet! Pick a chain:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await transactions(update, context)
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await rate_limit(update.effective_user.id, update.message.from_user.id):
         await update.message.reply_text(escape_markdown("🌠 Too fast! Take a breath!"), parse_mode="MarkdownV2")
@@ -694,6 +740,9 @@ async def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("set_tone", set_tone))
+    app.add_handler(CommandHandler("transactions", transactions))
+    app.add_handler(CommandHandler("history", history))
+    app.add_handler(CommandHandler("resync_wallet", resync_wallet))
     app.add_handler(CallbackQueryHandler(tone_callback, pattern="tone_"))
     app.add_handler(CallbackQueryHandler(quick_action_callback, pattern="quick_|cancel_action|more_|network_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
